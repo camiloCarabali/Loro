@@ -17,9 +17,24 @@ import threading
 import webview
 from google import genai
 
+def _bundle_dir() -> str:
+    """Carpeta de recursos empaquetados (logo). Con PyInstaller es la temporal
+    _MEIPASS; en desarrollo es la carpeta del script."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def _app_dir() -> str:
+    """Carpeta JUNTO al ejecutable, para archivos editables por el usuario
+    (.env, loro_prefs.json). Con PyInstaller es donde está el .exe; en
+    desarrollo es la carpeta del script."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 # Logo embebido (data URI) para la cabecera; si falta, queda cadena vacía.
 # Se reduce a 128px para no inflar el HTML; si Pillow no está, usa el PNG tal cual.
-_logo_path = os.path.join(os.path.dirname(__file__), "logo.png")
+_logo_path = os.path.join(_bundle_dir(), "logo.png")
 LOGO_DATA_URI = ""
 if os.path.exists(_logo_path):
     try:
@@ -35,8 +50,8 @@ if os.path.exists(_logo_path):
             _logo_bytes = _lf.read()
     LOGO_DATA_URI = "data:image/png;base64," + base64.b64encode(_logo_bytes).decode()
 
-# Cargar .env si existe (sin dependencias externas)
-_env_path = os.path.join(os.path.dirname(__file__), ".env")
+# Cargar .env si existe (sin dependencias externas). Va JUNTO al exe.
+_env_path = os.path.join(_app_dir(), ".env")
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
         for _line in _f:
@@ -624,8 +639,8 @@ HTML = """<!DOCTYPE html>
 HTML = HTML.replace("__LOGO__", LOGO_DATA_URI)
 
 
-# Ruta del archivo de preferencias (junto al script).
-PREFS_PATH = os.path.join(os.path.dirname(__file__), "loro_prefs.json")
+# Ruta del archivo de preferencias (junto al exe / script, editable).
+PREFS_PATH = os.path.join(_app_dir(), "loro_prefs.json")
 
 
 # ── API expuesta a JS ─────────────────────────────────────────────────────────
@@ -845,7 +860,7 @@ def main():
     )
     api.set_window(window)
 
-    _icon = os.path.join(os.path.dirname(__file__), "logo.ico")
+    _icon = os.path.join(_bundle_dir(), "logo.ico")
     start_kwargs = {"debug": False}
     if os.path.exists(_icon):
         start_kwargs["icon"] = _icon

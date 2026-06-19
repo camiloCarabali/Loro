@@ -6,3 +6,4 @@ scipy>=1.10
 pywebview>=4.4
 PyAudioWPatch>=0.2.12  # loopback WASAPI: capturar lo que suena en los auriculares
 Pillow>=10.0           # generar el logo/ícono de la ventana
+pyinstaller>=6.0       # solo para construir el .exe (no necesario en runtime)
