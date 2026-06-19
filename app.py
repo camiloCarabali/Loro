@@ -374,7 +374,7 @@ HTML = """<!DOCTYPE html>
       ⚠ No se detectó <b>CABLE Input</b>. Para que la llamada escuche tu voz traducida instala
       <b>VB-Audio Virtual Cable</b> (gratuito) y reinicia la app.
     </p>
-    <button id="modal-start" onclick="startFromModal()">Iniciar traducción</button>
+    <button id="modal-start" onclick="startFromModal()" title="Iniciar (Ctrl+Enter)">Iniciar traducción <span style="opacity:.5;font-weight:400">· Ctrl+Enter</span></button>
   </div>
 </div>
 
@@ -382,8 +382,8 @@ HTML = """<!DOCTYPE html>
   <h1><img id="logo" src="__LOGO__" alt="">Loro</h1>
   <div id="controls">
     <span id="status">Detenido</span>
-    <button id="btn-config" onclick="openConfig()">Configurar</button>
-    <button id="btn-stop" onclick="stopSessions()" disabled>Detener</button>
+    <button id="btn-config" onclick="openConfig()" title="Configurar (Ctrl+Enter)">Configurar</button>
+    <button id="btn-stop" onclick="stopSessions()" disabled title="Detener (Esc)">Detener</button>
   </div>
 </header>
 
@@ -520,6 +520,31 @@ HTML = """<!DOCTYPE html>
   function openConfig() {
     document.getElementById('modal-overlay').classList.remove('hidden');
   }
+
+  function isRunning() {
+    const cls = document.getElementById('status').className;
+    return cls === 'running' || cls === 'reconnecting';
+  }
+  function modalOpen() {
+    return !document.getElementById('modal-overlay').classList.contains('hidden');
+  }
+
+  // ── atajos de teclado ─────────────────────────────────────────────
+  //  Ctrl+Enter : iniciar (si el modal está abierto) o detener (si corre)
+  //  Esc        : detener si corre, o cerrar el modal
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      if (modalOpen())      startFromModal();
+      else if (isRunning()) stopSessions();
+      else                  openConfig();
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (isRunning())      { stopSessions(); }
+      else if (modalOpen()) { document.getElementById('modal-overlay').classList.add('hidden'); }
+    }
+  });
 
   // ── transcripts con acumulación ──────────────────────────────────
   // Por cada (session, kind) guardamos la burbuja activa y un timer.
