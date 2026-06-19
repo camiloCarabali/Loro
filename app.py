@@ -98,8 +98,10 @@ HTML = """<!DOCTYPE html>
     background: #2a2a2e;
     color: #888;
   }
-  #status.running { background: #1a3a2a; color: #5dbb8a; }
-  #status.error   { background: #3a1a1a; color: #e06060; }
+  #status.running      { background: #1a3a2a; color: #5dbb8a; }
+  #status.error        { background: #3a1a1a; color: #e06060; }
+  #status.reconnecting { background: #3a2e1a; color: #d8a850; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   #controls {
     display: flex;
@@ -531,7 +533,9 @@ HTML = """<!DOCTYPE html>
     const el = document.getElementById('status');
     el.textContent = label;
     el.className = cls;
-    document.getElementById('btn-stop').disabled = (cls !== 'running');
+    // Detener disponible mientras esté activo (traduciendo o reconectando).
+    const active = (cls === 'running' || cls === 'reconnecting');
+    document.getElementById('btn-stop').disabled = !active;
   }
 
   // pywebview llama esto desde Python
@@ -565,6 +569,7 @@ class Api:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._sessions: list[TranslationSession] = []
+        self._conn: dict[str, str] = {}  # estado de conexión por sesión
 
     def set_window(self, window):
         self._window = window
@@ -665,6 +670,14 @@ class Api:
         safe = json.dumps(text)
         self._js(f"onTranscript({json.dumps(name)}, {json.dumps(kind)}, {safe})")
 
+    def _on_conn_status(self, name: str, estado: str):
+        """Combina el estado de las dos sesiones en un estado global de UI."""
+        self._conn[name] = estado
+        if any(s == "reconnecting" for s in self._conn.values()):
+            self._js("onStatusChange('Reconectando…', 'reconnecting')")
+        elif self._conn and all(s == "connected" for s in self._conn.values()):
+            self._js("onStatusChange('Traduciendo…', 'running')")
+
     def _on_done(self, future):
         try:
             future.result()
@@ -678,6 +691,7 @@ class Api:
 
     async def _run_sessions(self, cfg: dict):
         client = genai.Client()
+        self._conn = {}  # reiniciar estado de conexión
 
         # "entender": capturamos lo que SUENA en los auriculares (loopback WASAPI),
         # traducimos a tu idioma y SOLO mostramos el texto (sin reproducir, para no
@@ -690,6 +704,7 @@ class Api:
             player=None,  # modo solo-texto
             target_language=cfg.get("lang_me", UNDERSTAND_TARGET),
             on_transcript=self._on_transcript,
+            on_status=self._on_conn_status,
         )
 
         # "hablar": tu micrófono real -> traducción al idioma del entrevistador
@@ -701,10 +716,11 @@ class Api:
             player=Player(cfg["virtual_mic"]),
             target_language=cfg.get("lang_them", SPEAK_TARGET),
             on_transcript=self._on_transcript,
+            on_status=self._on_conn_status,
         )
         self._sessions = [understand, speak]
 
-        self._js("onStatusChange('Traduciendo…', 'running')")
+        self._js("onStatusChange('Conectando…', 'reconnecting')")
         try:
             self._task = asyncio.current_task()
             await asyncio.gather(

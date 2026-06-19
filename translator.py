@@ -17,7 +17,8 @@ from audio import Player
 class TranslationSession:
     def __init__(self, name, client, mic, player: Player | None,
                  target_language: str, echo: bool = False,
-                 on_transcript=None, monitor_player: Player | None = None):
+                 on_transcript=None, monitor_player: Player | None = None,
+                 on_status=None):
         self.name = name
         self.client = client
         self.mic = mic                       # MicCapture o LoopbackCapture
@@ -26,6 +27,7 @@ class TranslationSession:
         self.echo = echo
         self._on_transcript = on_transcript  # callable(name, kind, text) | None
         self._monitor = monitor_player       # player extra para escuchar la propia traducción
+        self._on_status = on_status          # callable(name, estado) | None
 
     def _config(self):
         return types.LiveConnectConfig(
@@ -38,19 +40,42 @@ class TranslationSession:
             ),
         )
 
+    def _status(self, estado):
+        if self._on_status:
+            self._on_status(self.name, estado)
+
     async def run(self):
+        # El audio (mic/player) se abre UNA sola vez; solo la conexión a
+        # Gemini se reabre si se cae. Así una caída de red no pierde el audio.
         self.mic.start()
         if self.player:
             self.player.start()
         if self._monitor:
             self._monitor.start()
-        async with self.client.aio.live.connect(
-                model=MODEL, config=self._config()) as session:
-            print(f"[{self.name}] sesión abierta -> {self.target}")
-            await asyncio.gather(
-                self._send_loop(session),
-                self._receive_loop(session),
-            )
+
+        backoff = 1.0  # segundos; crece hasta un tope con cada fallo seguido
+        while True:
+            try:
+                async with self.client.aio.live.connect(
+                        model=MODEL, config=self._config()) as session:
+                    print(f"[{self.name}] sesión abierta -> {self.target}")
+                    self._status("connected")
+                    backoff = 1.0  # conexión exitosa: resetear backoff
+                    await asyncio.gather(
+                        self._send_loop(session),
+                        self._receive_loop(session),
+                    )
+            except asyncio.CancelledError:
+                raise  # stop del usuario: salir limpio
+            except Exception as e:
+                print(f"[{self.name}] conexión perdida: {e!r}")
+                self._status("reconnecting")
+                try:
+                    await asyncio.sleep(backoff)
+                except asyncio.CancelledError:
+                    raise
+                backoff = min(backoff * 2, 15.0)  # 1,2,4,8,15,15…
+                continue
 
     async def _send_loop(self, session):
         """Lee chunks del micro (en un thread) y los manda a Gemini."""
