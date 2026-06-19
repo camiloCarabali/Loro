@@ -209,18 +209,40 @@ HTML = """<!DOCTYPE html>
     overflow: hidden;
   }
 
-  .panel-header {
+  .panel-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 8px 14px;
     background: #1a1a1e;
+    border-bottom: 1px solid #2a2a2e;
+    flex-shrink: 0;
+  }
+  .panel-header {
     font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #666;
-    border-bottom: 1px solid #2a2a2e;
-    flex-shrink: 0;
+    white-space: nowrap;
   }
   .panel-header span { color: #a0c4ff; }
+
+  /* Medidor de nivel de audio (VU) */
+  .vu {
+    flex: 1;
+    height: 6px;
+    background: #0d0d10;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .vu-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2a7d4f, #5dbb8a 70%, #e0c060);
+    border-radius: 3px;
+    transition: width 0.08s linear;
+  }
 
   .transcript {
     flex: 1;
@@ -365,13 +387,19 @@ HTML = """<!DOCTYPE html>
 
 <div id="panels">
   <div class="panel">
-    <div class="panel-header" id="header-entender">Entrevistador → <span>Español</span></div>
+    <div class="panel-top">
+      <div class="panel-header" id="header-entender">Entrevistador → <span>Español</span></div>
+      <div class="vu"><div class="vu-fill" id="vu-entender"></div></div>
+    </div>
     <div class="transcript" id="t-entender">
       <p class="empty-hint">Esperando audio del entrevistador…</p>
     </div>
   </div>
   <div class="panel">
-    <div class="panel-header" id="header-hablar">Tú → <span>Inglés</span></div>
+    <div class="panel-top">
+      <div class="panel-header" id="header-hablar">Tú → <span>Inglés</span></div>
+      <div class="vu"><div class="vu-fill" id="vu-hablar"></div></div>
+    </div>
     <div class="transcript" id="t-hablar">
       <p class="empty-hint">Esperando tu voz…</p>
     </div>
@@ -512,6 +540,11 @@ HTML = """<!DOCTYPE html>
   };
   window.onStatusChange = function(label, cls) {
     setStatus(label, cls);
+  };
+  // Niveles de audio (0.0–1.0) -> ancho de las barras VU
+  window.onLevels = function(understand, hablar) {
+    document.getElementById('vu-entender').style.width = Math.min(understand * 100, 100) + '%';
+    document.getElementById('vu-hablar').style.width   = Math.min(hablar * 100, 100) + '%';
   };
 
   // Al cargar
@@ -674,11 +707,22 @@ class Api:
         self._js("onStatusChange('Traduciendo…', 'running')")
         try:
             self._task = asyncio.current_task()
-            await asyncio.gather(understand.run(), speak.run())
+            await asyncio.gather(
+                understand.run(),
+                speak.run(),
+                self._level_loop(understand.mic, speak.mic),
+            )
         finally:
             understand.close()
             speak.close()
+            self._js("onLevels(0, 0)")  # apagar barras al detener
             self._sessions = []
+
+    async def _level_loop(self, understand_mic, speak_mic):
+        """Envía a la UI el nivel de audio de cada captura ~7 veces/s."""
+        while True:
+            self._js(f"onLevels({understand_mic.level:.3f}, {speak_mic.level:.3f})")
+            await asyncio.sleep(0.14)
 
 
 # ── entrypoint ────────────────────────────────────────────────────────────────

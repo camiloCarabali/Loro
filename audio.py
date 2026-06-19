@@ -39,6 +39,19 @@ def _to_mono_int16(data: np.ndarray) -> np.ndarray:
     return data.astype(np.int16, copy=False).reshape(-1)
 
 
+def _rms_level(samples: np.ndarray) -> float:
+    """Nivel de audio 0.0–1.0 a partir del RMS de muestras int16.
+
+    Se escala con raíz para que voz normal mueva la barra de forma visible
+    (el RMS lineal de la voz suele ser muy bajo frente al máximo de int16).
+    """
+    if samples.size == 0:
+        return 0.0
+    rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2))
+    norm = min(rms / 32768.0, 1.0)
+    return float(norm ** 0.5)
+
+
 class MicCapture:
     """Captura un dispositivo de entrada y entrega chunks PCM 16 kHz mono.
 
@@ -52,6 +65,7 @@ class MicCapture:
         self.native_rate = int(info["default_samplerate"])
         self._q: "queue.Queue[bytes]" = queue.Queue()
         self._stream = None
+        self.level = 0.0  # nivel de audio 0.0–1.0 del último chunk (para la UI)
         # Factor de remuestreo native_rate -> 16000 reducido por su gcd.
         g = math.gcd(INPUT_RATE, self.native_rate)
         self._up, self._down = INPUT_RATE // g, self.native_rate // g
@@ -60,6 +74,7 @@ class MicCapture:
         if status:
             print(f"[mic {self.device_index}] {status}")
         mono = _to_mono_int16(indata.copy())
+        self.level = _rms_level(mono)
         if self.native_rate != INPUT_RATE:
             # resample_poly trabaja en float; volvemos a int16 al final.
             resampled = resample_poly(mono.astype(np.float32),
@@ -85,6 +100,7 @@ class MicCapture:
             return None
 
     def stop(self):
+        self.level = 0.0
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -195,6 +211,7 @@ class LoopbackCapture:
         self._stream = None
         self._running = False
         self._thread = None
+        self.level = 0.0  # nivel de audio 0.0–1.0 del último chunk (para la UI)
 
         g = math.gcd(INPUT_RATE, self.native_rate)
         self._up, self._down = INPUT_RATE // g, self.native_rate // g
@@ -210,6 +227,7 @@ class LoopbackCapture:
             if self.channels > 1:
                 data = data.reshape(-1, self.channels).mean(axis=1)
             data = data.astype(np.int16)
+            self.level = _rms_level(data)
             if self.native_rate != INPUT_RATE:
                 resampled = resample_poly(data.astype(np.float32),
                                           self._up, self._down)
@@ -237,6 +255,7 @@ class LoopbackCapture:
 
     def stop(self):
         self._running = False
+        self.level = 0.0
         if self._thread:
             self._thread.join(timeout=1.0)
         if self._stream:
