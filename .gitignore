@@ -31,7 +31,8 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-!Loro.spec  # nuestra receta de build sí se versiona
+# nuestra receta de build sí se versiona
+!Loro.spec
 
 # Installer logs
 pip-log.txt
