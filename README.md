@@ -1,79 +1,71 @@
-# Loro
+<p align="center">
+  <img src="logo.png" width="120" alt="Loro">
+</p>
 
-Traductor en vivo para entrevistas por videollamada.
+<h1 align="center">Loro 🦜</h1>
 
-Herramienta de escritorio (Windows) que traduce una entrevista en tiempo real
-en las dos direcciones usando el modelo `gemini-3.5-live-translate-preview`.
-Como un loro, repite lo que oye — pero traducido.
+<p align="center">Traductor en vivo para videollamadas, en las dos direcciones.</p>
 
-- **Entender:** la voz del entrevistador (inglés) llega a tus audífonos en español.
-- **Hablar:** tu voz (español) entra a la llamada traducida a inglés.
+---
 
-## 1. Cables de audio virtuales
+App de escritorio (Windows) que traduce una videollamada en tiempo real usando la
+Gemini Live API. Como un loro, repite lo que oye — pero traducido.
 
-Necesitas DOS dispositivos virtuales para evitar el feedback. Lo más simple:
+- **Entender:** lo que dice la otra persona se muestra en pantalla traducido a tu idioma.
+- **Hablar:** tu voz entra a la llamada traducida al idioma del otro, con pronunciación clara.
 
-- **VB-CABLE** (gratis): instala el paquete normal -> aparece "CABLE Input/Output".
-- **VB-CABLE A+B** (donación): añade un segundo cable -> "CABLE-A" y "CABLE-B".
+Nació de una necesidad personal: convivir con la tartamudez hace que el idioma —
+y sobre todo la pronunciación en inglés — sea una barrera injusta en entrevistas de
+trabajo. Loro busca que esa barrera pese menos.
 
-Quedan así dos cables: úsalos como Cable 1 y Cable 2 del paso 4.
+## Cómo funciona
 
-## 2. Configurar Zoom / Meet / Teams
+- **Escuchar a la otra persona** no necesita software extra: usa *loopback WASAPI*
+  para capturar lo que suena en tus auriculares de forma nativa en Windows.
+- **Enviar tu voz traducida** a la llamada requiere un cable de audio virtual
+  ([VB-Audio Virtual Cable](https://vb-audio.com/Cable/), gratis), porque Windows no
+  permite que una app inyecte audio en el micrófono de otra sin un driver virtual.
+- Dos sesiones simultáneas con Gemini, una por cada dirección.
 
-- **Micrófono** de la llamada  -> `CABLE Input` (Cable 1). Aquí entra tu inglés.
-- **Altavoz / salida** de la llamada -> `CABLE-A Input` (Cable 2). Por aquí
-  sacamos la voz del entrevistador hacia la app.
-
-> Usa AUDÍFONOS. Si la salida va a parlantes, tu micro la recaptura y se arma bucle.
-
-## 3. Instalar
+## Instalación
 
 ```bash
 pip install -r requirements.txt
-setx GEMINI_API_KEY tu_api_key       # Windows; reabre la terminal después
 ```
 
-API key gratis en https://aistudio.google.com/apikey
+1. Instala [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) y reinicia.
+2. Consigue una API key gratis en https://aistudio.google.com/apikey
+3. Crea un archivo `.env` junto al proyecto:
+   ```
+   GEMINI_API_KEY=tu_api_key
+   ```
 
-## 4. Correr
+## Uso
 
 ```bash
-python main.py --list     # ver los índices de tus dispositivos
-python main.py            # te pide los 4 y arranca
+python app.py
 ```
 
-Te preguntará por:
+En tu app de videollamada (Discord/Zoom/Meet/Teams), pon el **micrófono** en
+`CABLE Output`. En Loro elige tu micrófono real y los idiomas; el resto se
+autodetecta. Guía detallada en [MANUAL.md](MANUAL.md).
 
-1. Tu micrófono real
-2. Cable 1 INPUT (lo que Zoom usará como tu micro)
-3. Cable 2 OUTPUT (la voz del entrevistador que sale de Zoom)
-4. Tus audífonos
+## Características
 
-## Cómo encaja
+- UI con transcripts en vivo lado a lado
+- 12 idiomas en ambas direcciones
+- Medidores de nivel de audio
+- Reconexión automática ante caídas de red
+- Configuración persistente y atajos de teclado (`Ctrl+Enter` / `Esc`)
 
-```
-Tu micro --> [Sesión B: ES->EN] --> Cable 1 --> micro de Zoom
-Zoom --> Cable 2 --> [Sesión A: EN->ES] --> tus audífonos
-```
+## Stack
 
-## Límites conocidos (de la doc de Google)
+Python · Gemini Live API (`gemini-3.5-live-translate-preview`) · pywebview ·
+sounddevice · PyAudioWPatch (loopback WASAPI) · scipy
 
-- Solo entra audio, no texto.
-- La voz sintetizada puede cambiar de timbre tras pausas largas o con varios
-  hablantes a la vez.
-- La detección de idioma sufre con acentos fuertes o cambios rápidos de idioma;
-  afecta sobre todo al transcript, no tanto a la traducción.
-- Va ~2-3 s detrás del hablante. Es normal en traducción continua.
+## Límites conocidos
 
-## Costo
-
-API: ~$0.023 por minuto y por sesión. Dos sesiones activas = ~$0.046/min.
-Una entrevista de 45 min ≈ 2 USD.
-
-## Notas técnicas
-
-- Entrada a Gemini: PCM 16-bit, 16 kHz, mono. La app remuestrea tu micro
-  (que suele ir a 48 kHz) automáticamente con `scipy`.
-- Salida de Gemini: PCM 16-bit, 24 kHz, mono.
-- En producción cliente-servidor usa *ephemeral tokens* en vez de la API key
-  directa; aquí, al ser una app local que corres tú, la key por entorno basta.
+- Va ~2-3 s detrás del hablante (normal en traducción continua; por eso se lee en pantalla).
+- La voz sintetizada puede cambiar de timbre tras pausas largas.
+- Acentos fuertes afectan sobre todo al transcript, no tanto a la traducción.
+- Costo API: ~$0.046/min (dos sesiones). Una entrevista de 45 min ≈ 2 USD.
