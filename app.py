@@ -424,6 +424,17 @@ HTML = """<!DOCTYPE html>
     }
   }
 
+  // Selecciona en un <select> la opción cuyo texto coincide con `name`.
+  // Devuelve true si la encontró (para saber si una pref sigue siendo válida).
+  function selectByName(id, name) {
+    if (!name) return false;
+    const sel = document.getElementById(id);
+    for (const opt of sel.options) {
+      if (opt.text === name) { sel.value = opt.value; return true; }
+    }
+    return false;
+  }
+
   async function loadDevices() {
     try {
       const raw = await window.pywebview.api.get_setup();
@@ -443,9 +454,25 @@ HTML = """<!DOCTYPE html>
 
       document.getElementById('vb-warn').style.display =
         setup.cables.length === 0 ? 'block' : 'none';
+
+      // Restaurar preferencias guardadas (por NOMBRE, los índices cambian).
+      const prefsRaw = await window.pywebview.api.load_prefs();
+      const prefs = JSON.parse(prefsRaw || '{}');
+      if (prefs.mic_name)     selectByName('sel-mic-real', prefs.mic_name);
+      if (prefs.cable_name)   selectByName('sel-virtual-mic', prefs.cable_name);
+      if (prefs.loopback_name) selectByName('sel-loopback', prefs.loopback_name);
+      if (prefs.lang_me)   document.getElementById('sel-lang-me').value = prefs.lang_me;
+      if (prefs.lang_them) document.getElementById('sel-lang-them').value = prefs.lang_them;
     } catch(e) {
       console.error('Error cargando dispositivos', e);
     }
+  }
+
+  // Texto seleccionado de un <select> (o '' si es la opción vacía).
+  function selText(id) {
+    const sel = document.getElementById(id);
+    const opt = sel.options[sel.selectedIndex];
+    return opt ? opt.text : '';
   }
 
   const LANG_NAMES = {
@@ -471,6 +498,16 @@ HTML = """<!DOCTYPE html>
       lang_me:   langMe,
       lang_them: langThem,
     };
+
+    // Guardar preferencias por NOMBRE para la próxima vez.
+    window.pywebview.api.save_prefs(JSON.stringify({
+      mic_name:      selText('sel-mic-real'),
+      cable_name:    selText('sel-virtual-mic'),
+      loopback_name: loopVal === '' ? '' : selText('sel-loopback'),
+      lang_me:   langMe,
+      lang_them: langThem,
+    }));
+
     document.getElementById('modal-overlay').classList.add('hidden');
     setStatus('Conectando…', '');
     await window.pywebview.api.start_sessions(JSON.stringify(cfg));
@@ -562,6 +599,10 @@ HTML = """<!DOCTYPE html>
 HTML = HTML.replace("__LOGO__", LOGO_DATA_URI)
 
 
+# Ruta del archivo de preferencias (junto al script).
+PREFS_PATH = os.path.join(os.path.dirname(__file__), "loro_prefs.json")
+
+
 # ── API expuesta a JS ─────────────────────────────────────────────────────────
 class Api:
     def __init__(self):
@@ -570,6 +611,23 @@ class Api:
         self._task: asyncio.Task | None = None
         self._sessions: list[TranslationSession] = []
         self._conn: dict[str, str] = {}  # estado de conexión por sesión
+
+    # ── preferencias persistidas ──────────────────────────────────────
+    def load_prefs(self) -> str:
+        """Devuelve las preferencias guardadas (nombres de dispositivos + idiomas)."""
+        try:
+            with open(PREFS_PATH, encoding="utf-8") as f:
+                return f.read()
+        except (FileNotFoundError, OSError):
+            return "{}"
+
+    def save_prefs(self, prefs_json: str):
+        """Guarda las preferencias. El JS manda nombres, no índices."""
+        try:
+            with open(PREFS_PATH, "w", encoding="utf-8") as f:
+                f.write(prefs_json)
+        except OSError as e:
+            print(f"No se pudieron guardar preferencias: {e}")
 
     def set_window(self, window):
         self._window = window

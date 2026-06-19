@@ -219,3 +219,6 @@ __marimo__/
 
 # PyCharm
 .idea/
+
+# Loro: preferencias locales del usuario (dispositivos/idiomas)
+loro_prefs.json
