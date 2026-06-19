@@ -1,0 +1,8 @@
+protobuf
+google-genai>=1.0.0
+sounddevice>=0.4.6
+numpy>=1.24
+scipy>=1.10
+pywebview>=4.4
+PyAudioWPatch>=0.2.12  # loopback WASAPI: capturar lo que suena en los auriculares
+Pillow>=10.0           # generar el logo/ícono de la ventana

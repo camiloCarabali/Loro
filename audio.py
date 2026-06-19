@@ -1,0 +1,245 @@
+"""Captura, remuestreo y reproducción de audio con sounddevice.
+
+Notas importantes de Windows:
+- Tu micro normalmente corre a 44100/48000 Hz, no a 16000. Por eso capturamos
+  a la tasa nativa del dispositivo y remuestreamos a 16 kHz en Python.
+- Los cables virtuales (VB-Cable) aparecen como dispositivos de entrada y
+  salida normales; los seleccionas por su índice igual que cualquier otro.
+"""
+
+import math
+import queue
+import threading
+
+import numpy as np
+import sounddevice as sd
+from scipy.signal import resample_poly
+
+from config import INPUT_RATE, OUTPUT_RATE, INPUT_CHUNK_SAMPLES
+
+
+def list_devices():
+    """Imprime los dispositivos disponibles con su índice."""
+    print("\n=== Dispositivos de audio ===")
+    for i, d in enumerate(sd.query_devices()):
+        io = []
+        if d["max_input_channels"] > 0:
+            io.append(f"in:{d['max_input_channels']}")
+        if d["max_output_channels"] > 0:
+            io.append(f"out:{d['max_output_channels']}")
+        print(f"  [{i:>2}] {d['name']}  ({', '.join(io)})  "
+              f"{int(d['default_samplerate'])} Hz")
+    print("=============================\n")
+
+
+def _to_mono_int16(data: np.ndarray) -> np.ndarray:
+    """Mezcla a mono si viene en estéreo y asegura int16."""
+    if data.ndim == 2 and data.shape[1] > 1:
+        data = data.mean(axis=1)
+    return data.astype(np.int16, copy=False).reshape(-1)
+
+
+class MicCapture:
+    """Captura un dispositivo de entrada y entrega chunks PCM 16 kHz mono.
+
+    Úsalo como iterador: cada `next()` (o `for`) devuelve ~100 ms de audio
+    ya remuestreado a 16 kHz, listo para mandar a Gemini.
+    """
+
+    def __init__(self, device_index: int):
+        self.device_index = device_index
+        info = sd.query_devices(device_index)
+        self.native_rate = int(info["default_samplerate"])
+        self._q: "queue.Queue[bytes]" = queue.Queue()
+        self._stream = None
+        # Factor de remuestreo native_rate -> 16000 reducido por su gcd.
+        g = math.gcd(INPUT_RATE, self.native_rate)
+        self._up, self._down = INPUT_RATE // g, self.native_rate // g
+
+    def _callback(self, indata, frames, time_info, status):
+        if status:
+            print(f"[mic {self.device_index}] {status}")
+        mono = _to_mono_int16(indata.copy())
+        if self.native_rate != INPUT_RATE:
+            # resample_poly trabaja en float; volvemos a int16 al final.
+            resampled = resample_poly(mono.astype(np.float32),
+                                      self._up, self._down)
+            mono = np.clip(resampled, -32768, 32767).astype(np.int16)
+        self._q.put(mono.tobytes())
+
+    def start(self):
+        self._stream = sd.InputStream(
+            device=self.device_index,
+            channels=1,
+            samplerate=self.native_rate,
+            dtype="int16",
+            blocksize=int(self.native_rate * 0.1),  # ~100 ms nativos
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def read(self, timeout=1.0) -> bytes | None:
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+
+
+class Player:
+    """Reproduce audio PCM 24 kHz mono en un dispositivo de salida concreto.
+
+    El audio traducido que devuelve Gemini se va acumulando en un buffer;
+    el callback de sounddevice lo va consumiendo sin bloquear el event loop.
+    """
+
+    def __init__(self, device_index: int):
+        self.device_index = device_index
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._stream = None
+
+    def _callback(self, outdata, frames, time_info, status):
+        if status:
+            print(f"[out {self.device_index}] {status}")
+        needed = frames * 2  # int16 = 2 bytes
+        with self._lock:
+            take = self._buf[:needed]
+            del self._buf[:needed]
+        if len(take) < needed:
+            take += b"\x00" * (needed - len(take))  # silencio si falta
+        outdata[:] = np.frombuffer(take, dtype=np.int16).reshape(-1, 1)
+
+    def start(self):
+        self._stream = sd.OutputStream(
+            device=self.device_index,
+            channels=1,
+            samplerate=OUTPUT_RATE,
+            dtype="int16",
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def feed(self, pcm_bytes: bytes):
+        with self._lock:
+            self._buf.extend(pcm_bytes)
+
+    def stop(self):
+        if self._stream:
+            self._stream.stop()
+            self._stream.close()
+
+
+# ── Loopback WASAPI (pyaudiowpatch) ──────────────────────────────────────────
+# Captura lo que SALE por un altavoz/auriculares, sin cables virtuales.
+# Es la forma nativa de Windows de "oír lo que se está reproduciendo".
+
+def list_loopback_devices():
+    """Devuelve [(index, name)] de los dispositivos loopback WASAPI."""
+    import pyaudiowpatch as pyaudio
+    p = pyaudio.PyAudio()
+    try:
+        out = []
+        for lb in p.get_loopback_device_info_generator():
+            out.append((lb["index"], lb["name"]))
+        return out
+    finally:
+        p.terminate()
+
+
+def default_loopback_device():
+    """Devuelve (index, name) del loopback del altavoz por defecto, o None."""
+    import pyaudiowpatch as pyaudio
+    p = pyaudio.PyAudio()
+    try:
+        wasapi = p.get_host_api_info_by_type(pyaudio.paWASAPI)
+        spk = p.get_device_info_by_index(wasapi["defaultOutputDevice"])
+        if spk.get("isLoopbackDevice"):
+            return spk["index"], spk["name"]
+        for lb in p.get_loopback_device_info_generator():
+            if spk["name"] in lb["name"]:
+                return lb["index"], lb["name"]
+        return None
+    finally:
+        p.terminate()
+
+
+class LoopbackCapture:
+    """Captura lo que se reproduce en un altavoz (loopback WASAPI) y entrega
+    chunks PCM 16 kHz mono, igual que MicCapture.
+
+    Si device_index es None, usa el altavoz por defecto de Windows.
+    """
+
+    def __init__(self, device_index: int | None = None):
+        import pyaudiowpatch as pyaudio
+        self._pa = pyaudio.PyAudio()
+        self._paInt16 = pyaudio.paInt16
+
+        if device_index is None:
+            found = default_loopback_device()
+            if found is None:
+                raise RuntimeError("No se encontró loopback del altavoz por defecto.")
+            device_index, _ = found
+
+        info = self._pa.get_device_info_by_index(device_index)
+        self.device_index = device_index
+        self.native_rate = int(info["defaultSampleRate"])
+        self.channels = int(info["maxInputChannels"]) or 2
+
+        self._q: "queue.Queue[bytes]" = queue.Queue()
+        self._stream = None
+        self._running = False
+        self._thread = None
+
+        g = math.gcd(INPUT_RATE, self.native_rate)
+        self._up, self._down = INPUT_RATE // g, self.native_rate // g
+
+    def _loop(self):
+        chunk_frames = int(self.native_rate * 0.1)  # ~100 ms
+        while self._running:
+            try:
+                raw = self._stream.read(chunk_frames, exception_on_overflow=False)
+            except Exception:
+                break
+            data = np.frombuffer(raw, dtype=np.int16)
+            if self.channels > 1:
+                data = data.reshape(-1, self.channels).mean(axis=1)
+            data = data.astype(np.int16)
+            if self.native_rate != INPUT_RATE:
+                resampled = resample_poly(data.astype(np.float32),
+                                          self._up, self._down)
+                data = np.clip(resampled, -32768, 32767).astype(np.int16)
+            self._q.put(data.tobytes())
+
+    def start(self):
+        self._stream = self._pa.open(
+            format=self._paInt16,
+            channels=self.channels,
+            rate=self.native_rate,
+            frames_per_buffer=int(self.native_rate * 0.1),
+            input=True,
+            input_device_index=self.device_index,
+        )
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def read(self, timeout=1.0) -> bytes | None:
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        if self._stream:
+            self._stream.stop_stream()
+            self._stream.close()
+        self._pa.terminate()
