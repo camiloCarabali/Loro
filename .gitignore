@@ -224,3 +224,7 @@ __marimo__/
 
 # Loro: preferencias locales del usuario (dispositivos/idiomas)
 loro_prefs.json
+
+# Loro: muestras de audio (voz personal, no versionar)
+Recording*.m4a
+*.wav

@@ -65,6 +65,7 @@ from audio import (MicCapture, Player, list_devices,
                    LoopbackCapture, list_loopback_devices, default_loopback_device)
 from config import UNDERSTAND_TARGET, SPEAK_TARGET
 from translator import TranslationSession
+from speak_pipeline import SpeakPipeline
 
 # ── HTML/CSS/JS de la interfaz ────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
@@ -308,6 +309,20 @@ HTML = """<!DOCTYPE html>
     font-size: 0.85rem;
   }
 
+  .switch-row {
+    display: flex; align-items: center; gap: 9px;
+    cursor: pointer; font-size: 0.85rem; color: #ccc;
+  }
+  .switch-row input[type=checkbox] {
+    width: 16px; height: 16px; accent-color: #3a7bd5; cursor: pointer;
+  }
+  #txt-voice-id {
+    width: 100%;
+    background: #111114; color: #e0e0e0;
+    border: 1px solid #333; border-radius: 6px;
+    padding: 6px 8px; font-size: 0.85rem;
+  }
+
   .empty-hint {
     color: #333;
     font-size: 0.8rem;
@@ -385,6 +400,19 @@ HTML = """<!DOCTYPE html>
         </div>
       </div>
     </div>
+
+    <div class="field">
+      <label class="switch-row">
+        <input type="checkbox" id="chk-voice-clone" onchange="toggleVoiceClone()">
+        <span>🎙 Usar mi voz clonada <span style="color:#556;font-weight:400">(en vez de una voz genérica)</span></span>
+      </label>
+      <div id="voice-clone-box" style="display:none;margin-top:8px">
+        <input type="text" id="txt-voice-id" placeholder="Voice ID de ElevenLabs (ej. 21m00Tcm4TlvDq8ikWAM)">
+        <p class="hint">Tu voz clonada en <b>elevenlabs.io</b>. Necesita <code style="color:#a0c4ff">ELEVENLABS_API_KEY</code> en tu <code style="color:#a0c4ff">.env</code>. Cuando hables, la llamada oirá tu propia voz traducida.</p>
+        <p id="voice-warn" class="hint" style="display:none;color:#c08030"></p>
+      </div>
+    </div>
+
     <p id="vb-warn" style="display:none;color:#c08030;font-size:0.72rem;margin-top:10px;">
       ⚠ No se detectó <b>CABLE Input</b>. Para que la llamada escuche tu voz traducida instala
       <b>VB-Audio Virtual Cable</b> (gratuito) y reinicia la app.
@@ -478,6 +506,11 @@ HTML = """<!DOCTYPE html>
       if (prefs.loopback_name) selectByName('sel-loopback', prefs.loopback_name);
       if (prefs.lang_me)   document.getElementById('sel-lang-me').value = prefs.lang_me;
       if (prefs.lang_them) document.getElementById('sel-lang-them').value = prefs.lang_them;
+      if (prefs.voice_id)  document.getElementById('txt-voice-id').value = prefs.voice_id;
+      if (prefs.use_voice_clone) {
+        document.getElementById('chk-voice-clone').checked = true;
+        toggleVoiceClone();
+      }
     } catch(e) {
       console.error('Error cargando dispositivos', e);
     }
@@ -512,6 +545,8 @@ HTML = """<!DOCTYPE html>
       loopback:    loopVal === '' ? null : +loopVal,
       lang_me:   langMe,
       lang_them: langThem,
+      use_voice_clone: document.getElementById('chk-voice-clone').checked,
+      voice_id: document.getElementById('txt-voice-id').value.trim(),
     };
 
     // Guardar preferencias por NOMBRE para la próxima vez.
@@ -521,6 +556,8 @@ HTML = """<!DOCTYPE html>
       loopback_name: loopVal === '' ? '' : selText('sel-loopback'),
       lang_me:   langMe,
       lang_them: langThem,
+      use_voice_clone: cfg.use_voice_clone,
+      voice_id: cfg.voice_id,
     }));
 
     document.getElementById('modal-overlay').classList.add('hidden');
@@ -534,6 +571,11 @@ HTML = """<!DOCTYPE html>
 
   function openConfig() {
     document.getElementById('modal-overlay').classList.remove('hidden');
+  }
+
+  function toggleVoiceClone() {
+    const on = document.getElementById('chk-voice-clone').checked;
+    document.getElementById('voice-clone-box').style.display = on ? 'block' : 'none';
   }
 
   function isRunning() {
@@ -750,6 +792,14 @@ class Api:
         if not os.environ.get("GEMINI_API_KEY"):
             self._js("onStatusChange('Sin GEMINI_API_KEY', 'error')")
             return
+        # Si pidió voz clonada, validar que estén la key y el Voice ID.
+        if cfg.get("use_voice_clone"):
+            if not os.environ.get("ELEVENLABS_API_KEY"):
+                self._js("onStatusChange('Sin ELEVENLABS_API_KEY (voz clonada)', 'error')")
+                return
+            if not cfg.get("voice_id"):
+                self._js("onStatusChange('Falta el Voice ID de tu voz clonada', 'error')")
+                return
         future = asyncio.run_coroutine_threadsafe(
             self._run_sessions(cfg), self._loop
         )
@@ -807,15 +857,28 @@ class Api:
 
         # "hablar": tu micrófono real -> traducción al idioma del entrevistador
         # -> sale por el CABLE virtual que Discord usa como micrófono.
-        speak = TranslationSession(
-            name="hablar",
-            client=client,
-            mic=MicCapture(cfg["mic_real"]),
-            player=Player(cfg["virtual_mic"]),
-            target_language=cfg.get("lang_them", SPEAK_TARGET),
-            on_transcript=self._on_transcript,
-            on_status=self._on_conn_status,
-        )
+        lang_them = cfg.get("lang_them", SPEAK_TARGET)
+        if cfg.get("use_voice_clone") and cfg.get("voice_id"):
+            # Pipeline con TU voz clonada (ElevenLabs) en vez de la voz genérica.
+            speak = SpeakPipeline(
+                name="hablar",
+                mic=MicCapture(cfg["mic_real"]),
+                player=Player(cfg["virtual_mic"]),
+                target_language=lang_them,
+                voice_id=cfg["voice_id"],
+                on_transcript=self._on_transcript,
+                on_status=self._on_conn_status,
+            )
+        else:
+            speak = TranslationSession(
+                name="hablar",
+                client=client,
+                mic=MicCapture(cfg["mic_real"]),
+                player=Player(cfg["virtual_mic"]),
+                target_language=lang_them,
+                on_transcript=self._on_transcript,
+                on_status=self._on_conn_status,
+            )
         self._sessions = [understand, speak]
 
         self._js("onStatusChange('Conectando…', 'reconnecting')")

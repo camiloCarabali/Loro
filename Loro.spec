@@ -12,7 +12,8 @@ from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
 for pkg in ("sounddevice", "_sounddevice_data", "scipy",
-            "google", "google.genai", "pyaudiowpatch", "webview"):
+            "google", "google.genai", "pyaudiowpatch", "webview",
+            "elevenlabs"):  # voz clonada
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
