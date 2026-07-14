@@ -35,6 +35,11 @@ def _prompt(target_lang: str) -> str:
         "Produce una traducción FLUIDA y bien formada, como si la frase se "
         "hubiera dicho de corrido y con seguridad.\n"
         "Reglas estrictas:\n"
+        "- Traduce SOLO lo que realmente se dice. NUNCA inventes, completes ni "
+        "adivines palabras que no están en el audio.\n"
+        "- Si el audio está vacío, es ruido, o no se entiende ninguna palabra, "
+        "responde EXACTAMENTE: (nada)\n"
+        "- Si solo se oye una palabra suelta, traduce solo esa palabra.\n"
         "- NO cambies el significado ni agregues información que no se dijo.\n"
         "- NO respondas ni comentes; solo traduce.\n"
         "- Elimina repeticiones y muletillas propias del tartamudeo.\n"
@@ -61,8 +66,13 @@ class CleanTranslator:
                 yield chunk.text
 
     def translate_audio(self, audio_bytes: bytes, mime: str = "audio/wav") -> str:
-        """Igual pero devuelve la traducción completa (para pruebas)."""
-        return "".join(self.translate_audio_stream(audio_bytes, mime)).strip()
+        """Devuelve la traducción completa, o "" si no había nada que traducir."""
+        texto = "".join(self.translate_audio_stream(audio_bytes, mime)).strip()
+        # El prompt pide "(nada)" cuando el audio es ruido/silencio: no lo
+        # sintetizamos ni lo mostramos.
+        if texto.lower().strip(".!¡ ") in ("(nada)", "nada", "(none)", ""):
+            return ""
+        return texto
 
 
 def mime_for(path: str) -> str:

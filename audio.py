@@ -102,8 +102,12 @@ class MicCapture:
     def stop(self):
         self.level = 0.0
         if self._stream:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                print(f"[mic {self.device_index}] error al cerrar: {e!r}")
+            self._stream = None
 
 
 class Player:
@@ -113,11 +117,18 @@ class Player:
     el callback de sounddevice lo va consumiendo sin bloquear el event loop.
     """
 
+    # Tope del buffer. Si la red se traba, el audio llega a ráfagas y se acumula:
+    # el reproductor se va quedando atrás y suena desfasado y a tirones. Cuando
+    # pasa de este tope, tiramos lo viejo y saltamos a lo actual: mejor perder un
+    # instante que quedar segundos atrás repitiendo audio viejo.
+    MAX_BUFFER_SEC = 1.5
+
     def __init__(self, device_index: int):
         self.device_index = device_index
         self._buf = bytearray()
         self._lock = threading.Lock()
         self._stream = None
+        self._max_bytes = int(OUTPUT_RATE * 2 * self.MAX_BUFFER_SEC)  # int16 = 2 B
 
     def _callback(self, outdata, frames, time_info, status):
         if status:
@@ -143,11 +154,28 @@ class Player:
     def feed(self, pcm_bytes: bytes):
         with self._lock:
             self._buf.extend(pcm_bytes)
+            # Si nos pasamos del tope, descartar lo MÁS VIEJO y quedarnos con lo
+            # reciente: así el audio vuelve a estar sincronizado con lo que se dice.
+            if len(self._buf) > self._max_bytes:
+                exceso = len(self._buf) - self._max_bytes
+                del self._buf[:exceso]
+                print(f"[out {self.device_index}] buffer lleno: "
+                      f"descartados {exceso/2/OUTPUT_RATE:.1f}s de audio atrasado")
+
+    def flush(self):
+        """Descarta el audio pendiente. Se usa al reconectar: lo que quedó del
+        corte ya no corresponde a lo que se está diciendo ahora."""
+        with self._lock:
+            self._buf.clear()
 
     def stop(self):
         if self._stream:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                print(f"[out {self.device_index}] error al cerrar: {e!r}")
+            self._stream = None
 
 
 # ── Loopback WASAPI (pyaudiowpatch) ──────────────────────────────────────────
@@ -254,11 +282,38 @@ class LoopbackCapture:
             return None
 
     def stop(self):
+        # ORDEN IMPORTANTE: el hilo puede estar bloqueado dentro de
+        # stream.read(). Si terminamos PyAudio con el hilo aún vivo, el proceso
+        # revienta (es código C, no lanza excepción). Por eso: primero paramos
+        # el stream (eso desbloquea el read), luego esperamos al hilo de verdad,
+        # y solo al final soltamos PyAudio.
         self._running = False
         self.level = 0.0
-        if self._thread:
-            self._thread.join(timeout=1.0)
+
         if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
-        self._pa.terminate()
+            try:
+                self._stream.stop_stream()
+            except Exception:
+                pass
+
+        if self._thread:
+            self._thread.join(timeout=3.0)
+            if self._thread.is_alive():
+                # El hilo sigue colgado: NO liberamos PyAudio (nos llevaría el
+                # proceso por delante). Se soltará al cerrar la app.
+                print("[loopback] el hilo no terminó; se deja PyAudio vivo")
+                self._thread = None
+                self._stream = None
+                return
+
+        if self._stream:
+            try:
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+
+        try:
+            self._pa.terminate()
+        except Exception:
+            pass

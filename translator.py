@@ -70,6 +70,11 @@ class TranslationSession:
             except Exception as e:
                 print(f"[{self.name}] conexión perdida: {e!r}")
                 self._status("reconnecting")
+                # Tirar el audio que quedó del corte: ya no corresponde a lo que
+                # se está diciendo, y si se reproduce sale desfasado.
+                for p in (self.player, self._monitor):
+                    if p:
+                        p.flush()
                 try:
                     await asyncio.sleep(backoff)
                 except asyncio.CancelledError:
@@ -116,8 +121,13 @@ class TranslationSession:
                             self._monitor.feed(data)
 
     def close(self):
-        self.mic.stop()
-        if self.player:
-            self.player.stop()
-        if self._monitor:
-            self._monitor.stop()
+        # Cerrar cada dispositivo por separado: si uno falla (el hilo del
+        # executor aún leía del micro), los demás igual se sueltan y la app
+        # no se cae al detener.
+        for dev in (self.mic, self.player, self._monitor):
+            if dev is None:
+                continue
+            try:
+                dev.stop()
+            except Exception as e:
+                print(f"[{self.name}] error cerrando {type(dev).__name__}: {e!r}")

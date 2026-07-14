@@ -890,8 +890,13 @@ class Api:
                 self._level_loop(understand.mic, speak.mic),
             )
         finally:
-            understand.close()
-            speak.close()
+            # Cerrar cada sesión por separado: si una falla al soltar el audio,
+            # la otra igual se cierra y la app no se cae.
+            for s in (understand, speak):
+                try:
+                    s.close()
+                except Exception as e:
+                    print(f"[cerrar {s.name}] {e!r}")
             self._js("onLevels(0, 0)")  # apagar barras al detener
             self._sessions = []
 
